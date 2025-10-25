@@ -1,2 +1,2 @@
 # SASPS
-Compararea modelelor de comunicare sincronă vs. asincronă între microservicii pentru creșterea rezilienței aplicațiilor”
+Compararea modelelor de comunicare sincronă vs. asincronă între microservicii pentru creșterea rezilienței aplicațiilor
