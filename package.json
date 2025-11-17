@@ -1,0 +1,37 @@
+{
+  "name": "caching-strategies-comparison",
+  "version": "1.0.0",
+  "description": "Performance comparison of different caching strategies using Node.js, MySQL, and Redis",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node src/test.js",
+    "dev": "nodemon src/index.js",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "load-test": "node src/loadTest.js"
+  },
+  "keywords": [
+    "caching",
+    "redis",
+    "mysql",
+    "performance",
+    "distributed-caching"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "mysql2": "^3.6.5",
+    "redis": "^4.6.11",
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.2",
+    "autocannon": "^7.14.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
+
