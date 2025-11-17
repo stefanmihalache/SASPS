@@ -10,9 +10,9 @@ class RedisService {
   async connect() {
     if (!this.client) {
       this.client = redis.createClient({
-        host: this.config.host,
-        port: this.config.port,
         socket: {
+          host: this.config.host,
+          port: this.config.port,
           reconnectStrategy: (retries) => Math.min(retries * 50, 500)
         }
       });
