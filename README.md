@@ -40,9 +40,9 @@ This project demonstrates and benchmarks four different caching strategies to he
 ### Installation
 
 1. **Clone the repository**
-   ```bash
-   cd /Users/stefanmih/Documents/facultate/SASPS
-   ```
+    ```bash
+    git clone https://github.com/stefanmihalache/SASPS.git
+    ```
 
 2. **Install dependencies**
    ```bash
