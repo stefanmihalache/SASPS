@@ -5,6 +5,8 @@ const NoCachingService = require('./strategies/NoCaching');
 const CacheAsideService = require('./strategies/CacheAside');
 const WriteThroughService = require('./strategies/WriteThrough');
 const WriteBehindService = require('./strategies/WriteBehind');
+const ReadThroughService = require('./strategies/ReadThrough');
+const WriteAroundService = require('./strategies/WriteAround');
 
 const SERVICE_NAME = process.env.SERVICE_NAME || 'no-caching';
 const PORT = process.env.PORT || 3000;
@@ -51,6 +53,14 @@ async function startService() {
         service = new WriteBehindService(dbConfig, redisConfig, writeBehindInterval);
         break;
 
+      case 'read-through':
+        service = new ReadThroughService(dbConfig, redisConfig);
+        break;
+
+      case 'write-around':
+        service = new WriteAroundService(dbConfig, redisConfig);
+        break;
+
       default:
         throw new Error(`Unknown service: ${SERVICE_NAME}`);
     }
@@ -88,12 +98,16 @@ async function startService() {
     const server = app.listen(PORT, () => {
       console.log(`\n✅ ${SERVICE_NAME} service listening on port ${PORT}\n`);
       console.log(`   Database: ${dbConfig.host}:${dbConfig.port}/${dbConfig.database}`);
+
+      // Only print Redis line for strategies that actually use it
       if (SERVICE_NAME !== 'no-caching') {
         console.log(`   Redis: ${redisConfig.host}:${redisConfig.port}`);
       }
+
       if (SERVICE_NAME === 'write-behind') {
         console.log(`   Write-Behind Interval: ${writeBehindInterval}ms`);
       }
+
       console.log(`\n   Ready to accept requests! 🎉\n`);
     });
 
@@ -123,4 +137,3 @@ async function startService() {
 }
 
 startService();
-

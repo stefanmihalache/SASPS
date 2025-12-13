@@ -3,14 +3,16 @@ const axios = require('axios');
 
 /**
  * Load testing script to compare caching strategies
- * Tests all four services and generates performance metrics
+ * Tests all services and generates performance metrics
  */
 
 const SERVICES = [
-  { name: 'No-Caching', url: 'http://localhost:3000', port: 3000 },
-  { name: 'Cache-Aside', url: 'http://localhost:3001', port: 3001 },
-  { name: 'Write-Through', url: 'http://localhost:3002', port: 3002 },
-  { name: 'Write-Behind', url: 'http://localhost:3003', port: 3003 }
+  { name: 'No-Caching', url: 'http://localhost:3000', port: 3000, strategy: 'no-caching' },
+  { name: 'Cache-Aside', url: 'http://localhost:3001', port: 3001, strategy: 'cache-aside' },
+  { name: 'Write-Through', url: 'http://localhost:3002', port: 3002, strategy: 'write-through' },
+  { name: 'Write-Behind', url: 'http://localhost:3003', port: 3003, strategy: 'write-behind' },
+  { name: 'Read-Through', url: 'http://localhost:3004', port: 3004, strategy: 'read-through' },
+  { name: 'Write-Around', url: 'http://localhost:3005', port: 3005, strategy: 'write-around' }
 ];
 
 const PRODUCT_IDS = [
@@ -19,6 +21,10 @@ const PRODUCT_IDS = [
 ];
 
 const CUSTOMER_IDS = [103, 112, 114, 119, 121, 124, 125, 128, 129, 131];
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
 
 class LoadTester {
   constructor() {
@@ -59,46 +65,49 @@ class LoadTester {
     }
   }
 
-  async runReadTest(service, duration = 30) {
-    console.log(`\n📊 Running READ test for ${service.name} (${duration}s)...`);
-
-    const result = await autocannon({
-      url: service.url,
-      connections: 50,
-      duration: duration,
-      requests: [
-        {
-          method: 'GET',
-          path: `/api/products/${PRODUCT_IDS[Math.floor(Math.random() * PRODUCT_IDS.length)]}`
-        },
-        {
-          method: 'GET',
-          path: '/api/products?limit=50'
-        },
-        {
-          method: 'GET',
-          path: `/api/customers/${CUSTOMER_IDS[Math.floor(Math.random() * CUSTOMER_IDS.length)]}`
-        }
-      ]
-    });
-
-    return result;
+  async tryFlush(url) {
+    try {
+      await axios.post(`${url}/api/flush`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
-  async runWriteTest(service, duration = 10) {
-    console.log(`\n📝 Running WRITE test for ${service.name} (${duration}s)...`);
+  // Randomize per request via setupRequest (instead of choosing once at config creation)
+  buildReadAutocannonConfig(service, duration = 30) {
+    const paths = [
+      { method: 'GET', path: 'PRODUCT' }, // placeholder
+      { method: 'GET', path: '/api/products?limit=50' },
+      { method: 'GET', path: 'CUSTOMER' } // placeholder
+    ];
 
-    const result = await autocannon({
+    return {
+      url: service.url,
+      connections: 50,
+      duration,
+      requests: paths,
+      setupRequest: (req) => {
+        if (req.path === 'PRODUCT') {
+          req.path = `/api/products/${pick(PRODUCT_IDS)}`;
+        } else if (req.path === 'CUSTOMER') {
+          req.path = `/api/customers/${pick(CUSTOMER_IDS)}`;
+        }
+        return req;
+      }
+    };
+  }
+
+  buildWriteAutocannonConfig(service, duration = 10) {
+    return {
       url: service.url,
       connections: 20,
-      duration: duration,
+      duration,
       requests: [
         {
           method: 'PUT',
           path: `/api/products/${PRODUCT_IDS[0]}`,
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             productName: 'Updated Product ' + Date.now(),
             quantityInStock: Math.floor(Math.random() * 1000),
@@ -107,47 +116,54 @@ class LoadTester {
           })
         }
       ]
-    });
+    };
+  }
 
-    return result;
+  buildMixedAutocannonConfig(service, duration = 30) {
+    const requests = [
+      { method: 'GET', path: 'PRODUCT', weight: 7 },               // 70% reads
+      { method: 'GET', path: '/api/products?limit=30', weight: 2 }, // 20% list
+      {
+        method: 'PUT',
+        path: `/api/products/${PRODUCT_IDS[0]}`,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productName: 'Updated Product ' + Date.now(),
+          quantityInStock: Math.floor(Math.random() * 1000),
+          buyPrice: (Math.random() * 100).toFixed(2),
+          MSRP: (Math.random() * 200).toFixed(2)
+        }),
+        weight: 1 // 10% writes
+      }
+    ];
+
+    return {
+      url: service.url,
+      connections: 40,
+      duration,
+      requests,
+      setupRequest: (req) => {
+        if (req.path === 'PRODUCT') {
+          req.path = `/api/products/${pick(PRODUCT_IDS)}`;
+        }
+        return req;
+      }
+    };
+  }
+
+  async runReadTest(service, duration = 30) {
+    console.log(`\n📊 Running READ test for ${service.name} (${duration}s)...`);
+    return autocannon(this.buildReadAutocannonConfig(service, duration));
+  }
+
+  async runWriteTest(service, duration = 10) {
+    console.log(`\n📝 Running WRITE test for ${service.name} (${duration}s)...`);
+    return autocannon(this.buildWriteAutocannonConfig(service, duration));
   }
 
   async runMixedTest(service, duration = 30) {
     console.log(`\n🔀 Running MIXED test for ${service.name} (${duration}s)...`);
-
-    const result = await autocannon({
-      url: service.url,
-      connections: 40,
-      duration: duration,
-      requests: [
-        {
-          method: 'GET',
-          path: `/api/products/${PRODUCT_IDS[Math.floor(Math.random() * PRODUCT_IDS.length)]}`,
-          weight: 7 // 70% reads
-        },
-        {
-          method: 'GET',
-          path: '/api/products?limit=30',
-          weight: 2 // 20% list queries
-        },
-        {
-          method: 'PUT',
-          path: `/api/products/${PRODUCT_IDS[0]}`,
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            productName: 'Updated Product',
-            quantityInStock: Math.floor(Math.random() * 1000),
-            buyPrice: (Math.random() * 100).toFixed(2),
-            MSRP: (Math.random() * 200).toFixed(2)
-          }),
-          weight: 1 // 10% writes
-        }
-      ]
-    });
-
-    return result;
+    return autocannon(this.buildMixedAutocannonConfig(service, duration));
   }
 
   printResults(testName, serviceName, autocannonResult, stats) {
@@ -166,9 +182,7 @@ class LoadTester {
       console.log(`  Writes:           ${stats.writes}`);
       console.log(`  Cache Hits:       ${stats.cacheHits}`);
       console.log(`  Cache Misses:     ${stats.cacheMisses}`);
-      if (stats.cacheHitRate) {
-        console.log(`  Cache Hit Rate:   ${stats.cacheHitRate}`);
-      }
+      if (stats.cacheHitRate) console.log(`  Cache Hit Rate:   ${stats.cacheHitRate}`);
       if (stats.queuedWrites !== undefined) {
         console.log(`  Queued Writes:    ${stats.queuedWrites}`);
         console.log(`  Flushed Writes:   ${stats.flushedWrites}`);
@@ -195,17 +209,16 @@ class LoadTester {
       console.log('#'.repeat(60));
 
       try {
-        // Wait for service to be ready
         await this.waitForService(service.url);
         console.log(`✓ Service ${service.name} is ready`);
 
-        // Reset stats before testing
+        // Warm-up + reset
         await this.resetStats(service.url);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
         const serviceResults = {};
 
-        // 1. Read Test
+        // 1) READ
         await this.resetStats(service.url);
         await new Promise(resolve => setTimeout(resolve, 1000));
         const readResult = await this.runReadTest(service, 30);
@@ -215,17 +228,18 @@ class LoadTester {
 
         await new Promise(resolve => setTimeout(resolve, 3000));
 
-        // 2. Write Test
+        // 2) WRITE
         await this.resetStats(service.url);
         await new Promise(resolve => setTimeout(resolve, 1000));
         const writeResult = await this.runWriteTest(service, 10);
-        const writeStats = await this.getStats(service.url);
+        let writeStats = await this.getStats(service.url);
 
-        // For write-behind, trigger flush and wait
-        if (service.name === 'Write-Behind') {
-          console.log('\n⏳ Waiting for write-behind flush...');
-          await axios.post(`${service.url}/api/flush`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
+        // For write-behind, flush so DB catches up (if endpoint exists)
+        if (service.strategy === 'write-behind') {
+          console.log('\n⏳ Triggering write-behind flush...');
+          const flushed = await this.tryFlush(service.url);
+          if (flushed) await new Promise(resolve => setTimeout(resolve, 2000));
+          writeStats = await this.getStats(service.url);
         }
 
         this.printResults('WRITE TEST', service.name, writeResult, writeStats);
@@ -233,7 +247,7 @@ class LoadTester {
 
         await new Promise(resolve => setTimeout(resolve, 3000));
 
-        // 3. Mixed Test
+        // 3) MIXED
         await this.resetStats(service.url);
         await new Promise(resolve => setTimeout(resolve, 1000));
         const mixedResult = await this.runMixedTest(service, 30);
@@ -242,7 +256,6 @@ class LoadTester {
         serviceResults.mixed = { autocannon: mixedResult, stats: mixedStats };
 
         results.services[service.name] = serviceResults;
-
       } catch (error) {
         console.error(`\n❌ Error testing ${service.name}:`, error.message);
         results.services[service.name] = { error: error.message };
@@ -257,7 +270,6 @@ class LoadTester {
     fs.writeFileSync(resultsFile, JSON.stringify(results, null, 2));
     console.log(`\n✅ Results saved to ${resultsFile}`);
 
-    // Print comparison summary
     this.printComparison(results);
   }
 
@@ -272,27 +284,30 @@ class LoadTester {
       console.log(`\n${test.toUpperCase()} TEST COMPARISON:`);
       console.log('-'.repeat(80));
       console.log(
-        'Strategy'.padEnd(20) +
-        'Throughput'.padEnd(15) +
-        'Latency (avg)'.padEnd(15) +
-        'Latency (p99)'.padEnd(15) +
-        'Hit Rate'
+          'Strategy'.padEnd(20) +
+          'Throughput'.padEnd(15) +
+          'Latency (avg)'.padEnd(15) +
+          'Latency (p99)'.padEnd(15) +
+          'Hit Rate'
       );
       console.log('-'.repeat(80));
 
       for (const serviceName in results.services) {
-        const serviceResult = results.services[serviceName][test];
-        if (serviceResult && !serviceResult.error) {
-          const ac = serviceResult.autocannon;
-          const stats = serviceResult.stats;
-          console.log(
+        const service = results.services[serviceName];
+        const serviceResult = service?.[test];
+
+        if (!serviceResult || service.error) continue;
+
+        const ac = serviceResult.autocannon;
+        const stats = serviceResult.stats || {};
+
+        console.log(
             serviceName.padEnd(20) +
             `${ac.throughput.mean.toFixed(2)} r/s`.padEnd(15) +
             `${ac.latency.mean.toFixed(2)} ms`.padEnd(15) +
             `${ac.latency.p99.toFixed(2)} ms`.padEnd(15) +
             (stats.cacheHitRate || 'N/A')
-          );
-        }
+        );
       }
     }
 
@@ -306,4 +321,3 @@ tester.runFullTest().catch(error => {
   console.error('Fatal error:', error);
   process.exit(1);
 });
-

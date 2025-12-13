@@ -120,3 +120,51 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+  read-through:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: read-through-service
+    environment:
+      - SERVICE_NAME=read-through
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_USER=user
+      - DB_PASSWORD=pass
+      - DB_NAME=testdb
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PORT=3004
+    ports:
+      - "3004:3004"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  write-around:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: write-around-service
+    environment:
+      - SERVICE_NAME=write-around
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_USER=user
+      - DB_PASSWORD=pass
+      - DB_NAME=testdb
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PORT=3005
+    ports:
+      - "3005:3005"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
