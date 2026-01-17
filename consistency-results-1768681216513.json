@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-01-17T20:20:05.586Z",
+  "staleWindow": {
+    "marker": "wb-1768681205586",
+    "queuedWrites": 58758,
+    "flushedWrites": 8,
+    "staleWindowMs": 5092,
+    "dbUpdated": true,
+    "error": null,
+    "lastDbValue": "WB Test wb-1768681205586"
+  },
+  "invalidation": [
+    {
+      "strategy": "Cache-Aside",
+      "marker": "inv-1768681210724-152",
+      "firstSource": "database",
+      "secondSource": "cache",
+      "consistent": true,
+      "error": null
+    },
+    {
+      "strategy": "Write-Through",
+      "marker": "inv-1768681210739-943",
+      "firstSource": "cache",
+      "secondSource": "cache",
+      "consistent": true,
+      "error": null
+    },
+    {
+      "strategy": "Read-Through",
+      "marker": "inv-1768681210750-818",
+      "firstSource": "cache",
+      "secondSource": "cache",
+      "consistent": true,
+      "error": null
+    },
+    {
+      "strategy": "Write-Around",
+      "marker": "inv-1768681210762-203",
+      "firstSource": "database",
+      "secondSource": "cache",
+      "consistent": true,
+      "error": null
+    }
+  ],
+  "redisFailure": {
+    "marker": "redis-down-1768681211788",
+    "writeSucceeded": false,
+    "readAfterRestart": "RedisDown redis-down-1768681211788",
+    "error": "Write failed while redis down: timeout of 4000ms exceeded",
+    "skipped": false
+  }
+}

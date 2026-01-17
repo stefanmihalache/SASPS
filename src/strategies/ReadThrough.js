@@ -8,9 +8,11 @@ const RedisService = require('../services/redis');
  * - Write: write-through (DB then cache) to keep strong consistency
  */
 class ReadThroughService {
-    constructor(dbConfig, redisConfig) {
+    constructor(dbConfig, redisConfig, metrics = null, serviceName = 'read-through') {
         this.db = new DatabaseService(dbConfig);
         this.cache = new RedisService(redisConfig);
+        this.metrics = metrics;
+        this.serviceName = serviceName;
         this.cacheTTL = 3600; // 1 hour
 
         this.stats = {
@@ -23,6 +25,33 @@ class ReadThroughService {
             avgResponseTime: 0,
             requests: []
         };
+    }
+
+    recordReadHit() {
+        this.stats.reads++;
+        this.stats.cacheHits++;
+        this.metrics?.reads.labels(this.serviceName).inc();
+        this.metrics?.cacheHits.labels(this.serviceName).inc();
+    }
+
+    recordReadMiss() {
+        this.stats.reads++;
+        this.stats.cacheMisses++;
+        this.metrics?.reads.labels(this.serviceName).inc();
+        this.metrics?.cacheMisses.labels(this.serviceName).inc();
+    }
+
+    recordWrite() {
+        this.stats.writes++;
+        this.metrics?.writes.labels(this.serviceName).inc();
+    }
+
+    recordDuration(ms) {
+        this.stats.requests.push(ms);
+    }
+
+    recordError() {
+        this.metrics?.errors.labels(this.serviceName).inc();
     }
 
     async init() {
@@ -48,11 +77,11 @@ class ReadThroughService {
     async getOrLoad(cacheKey, loaderFn) {
         const cached = await this.cache.get(cacheKey);
         if (cached) {
-            this.stats.cacheHits++;
+            this.recordReadHit();
             return { value: cached, source: 'cache' };
         }
 
-        this.stats.cacheMisses++;
+        this.recordReadMiss();
         const loaded = await loaderFn();
         if (loaded) {
             await this.cache.set(cacheKey, loaded, this.cacheTTL);
@@ -107,7 +136,6 @@ class ReadThroughService {
         router.get('/products/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const cacheKey = this.getCacheKey('product', req.params.id);
 
                 const { value: product, source } = await this.getOrLoad(cacheKey, () =>
@@ -115,12 +143,13 @@ class ReadThroughService {
                 );
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 if (product) return res.json({ data: product, source, responseTime });
                 return res.status(404).json({ error: 'Product not found' });
             } catch (error) {
                 console.error('Error fetching product:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -128,7 +157,6 @@ class ReadThroughService {
         router.get('/products', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const limit = parseInt(req.query.limit) || 100;
                 const cacheKey = this.getCacheKey('products', `all:${limit}`);
 
@@ -137,7 +165,7 @@ class ReadThroughService {
                 );
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.json({
                     data: products || [],
@@ -147,6 +175,7 @@ class ReadThroughService {
                 });
             } catch (error) {
                 console.error('Error fetching products:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -155,7 +184,7 @@ class ReadThroughService {
         router.put('/products/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.writes++;
+                this.recordWrite();
 
                 const current = await this.db.getProductById(req.params.id);
                 if (!current) return res.status(404).json({ error: 'Product not found' });
@@ -168,11 +197,12 @@ class ReadThroughService {
                 await this.invalidateProductLists();
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.json({ message: 'Product updated successfully', responseTime });
             } catch (error) {
                 console.error('Error updating product:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -180,7 +210,7 @@ class ReadThroughService {
         router.post('/products', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.writes++;
+                this.recordWrite();
 
                 await this.db.createProduct(req.body);
 
@@ -192,11 +222,12 @@ class ReadThroughService {
                 await this.invalidateProductLists();
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.status(201).json({ message: 'Product created successfully', responseTime });
             } catch (error) {
                 console.error('Error creating product:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -204,7 +235,7 @@ class ReadThroughService {
         router.delete('/products/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.writes++;
+                this.recordWrite();
 
                 await this.db.deleteProduct(req.params.id);
 
@@ -212,11 +243,12 @@ class ReadThroughService {
                 await this.invalidateProductLists();
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.json({ message: 'Product deleted successfully', responseTime });
             } catch (error) {
                 console.error('Error deleting product:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -227,7 +259,6 @@ class ReadThroughService {
         router.get('/customers/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const cacheKey = this.getCacheKey('customer', req.params.id);
 
                 const { value: customer, source } = await this.getOrLoad(cacheKey, () =>
@@ -235,12 +266,13 @@ class ReadThroughService {
                 );
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 if (customer) return res.json({ data: customer, source, responseTime });
                 return res.status(404).json({ error: 'Customer not found' });
             } catch (error) {
                 console.error('Error fetching customer:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -248,7 +280,6 @@ class ReadThroughService {
         router.get('/customers', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const limit = parseInt(req.query.limit) || 100;
                 const cacheKey = this.getCacheKey('customers', `all:${limit}`);
 
@@ -257,7 +288,7 @@ class ReadThroughService {
                 );
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.json({
                     data: customers || [],
@@ -267,6 +298,7 @@ class ReadThroughService {
                 });
             } catch (error) {
                 console.error('Error fetching customers:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -277,7 +309,6 @@ class ReadThroughService {
         router.get('/orders/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const cacheKey = this.getCacheKey('order', req.params.id);
 
                 const { value: order, source } = await this.getOrLoad(cacheKey, () =>
@@ -285,12 +316,13 @@ class ReadThroughService {
                 );
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 if (order) return res.json({ data: order, source, responseTime });
                 return res.status(404).json({ error: 'Order not found' });
             } catch (error) {
                 console.error('Error fetching order:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });

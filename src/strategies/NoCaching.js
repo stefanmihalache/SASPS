@@ -7,8 +7,10 @@ const DatabaseService = require('../services/database');
  * This serves as the baseline for comparison.
  */
 class NoCachingService {
-  constructor(dbConfig) {
+  constructor(dbConfig, metrics = null, serviceName = 'no-caching') {
     this.db = new DatabaseService(dbConfig);
+    this.metrics = metrics;
+    this.serviceName = serviceName;
     this.stats = {
       reads: 0,
       writes: 0,
@@ -17,6 +19,31 @@ class NoCachingService {
       avgResponseTime: 0,
       requests: []
     };
+  }
+
+  recordRead(hit = false) {
+    this.stats.reads++;
+    if (hit) {
+      this.stats.cacheHits++;
+      this.metrics?.cacheHits.labels(this.serviceName).inc();
+    } else {
+      this.stats.cacheMisses++;
+      this.metrics?.cacheMisses.labels(this.serviceName).inc();
+    }
+    this.metrics?.reads.labels(this.serviceName).inc();
+  }
+
+  recordWrite() {
+    this.stats.writes++;
+    this.metrics?.writes.labels(this.serviceName).inc();
+  }
+
+  recordDuration(ms) {
+    this.stats.requests.push(ms);
+  }
+
+  recordError() {
+    this.metrics?.errors.labels(this.serviceName).inc();
   }
 
   async init() {
@@ -60,13 +87,12 @@ class NoCachingService {
     router.get('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
-        this.stats.cacheMisses++; // Always a miss since no cache
+        this.recordRead(false); // always miss
 
         const product = await this.db.getProductById(req.params.id);
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (product) {
           res.json({
@@ -79,6 +105,7 @@ class NoCachingService {
         }
       } catch (error) {
         console.error('Error fetching product:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -87,14 +114,13 @@ class NoCachingService {
     router.get('/products', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
-        this.stats.cacheMisses++;
+        this.recordRead(false);
 
         const limit = parseInt(req.query.limit) || 100;
         const products = await this.db.getAllProducts(limit);
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         res.json({
           data: products,
@@ -104,6 +130,7 @@ class NoCachingService {
         });
       } catch (error) {
         console.error('Error fetching products:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -112,12 +139,12 @@ class NoCachingService {
     router.put('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         const success = await this.db.updateProduct(req.params.id, req.body);
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (success) {
           res.json({
@@ -129,6 +156,7 @@ class NoCachingService {
         }
       } catch (error) {
         console.error('Error updating product:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -137,12 +165,12 @@ class NoCachingService {
     router.post('/products', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         const success = await this.db.createProduct(req.body);
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (success) {
           res.status(201).json({
@@ -154,6 +182,7 @@ class NoCachingService {
         }
       } catch (error) {
         console.error('Error creating product:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -162,12 +191,12 @@ class NoCachingService {
     router.delete('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         const success = await this.db.deleteProduct(req.params.id);
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (success) {
           res.json({
@@ -179,6 +208,7 @@ class NoCachingService {
         }
       } catch (error) {
         console.error('Error deleting product:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -187,13 +217,12 @@ class NoCachingService {
     router.get('/customers/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
-        this.stats.cacheMisses++;
+        this.recordRead(false);
 
         const customer = await this.db.getCustomerById(req.params.id);
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (customer) {
           res.json({
@@ -206,6 +235,7 @@ class NoCachingService {
         }
       } catch (error) {
         console.error('Error fetching customer:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -213,14 +243,13 @@ class NoCachingService {
     router.get('/customers', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
-        this.stats.cacheMisses++;
+        this.recordRead(false);
 
         const limit = parseInt(req.query.limit) || 100;
         const customers = await this.db.getAllCustomers(limit);
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         res.json({
           data: customers,
@@ -230,6 +259,7 @@ class NoCachingService {
         });
       } catch (error) {
         console.error('Error fetching customers:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -238,13 +268,12 @@ class NoCachingService {
     router.get('/orders/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
-        this.stats.cacheMisses++;
+        this.recordRead(false);
 
         const order = await this.db.getOrderById(req.params.id);
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (order) {
           res.json({
@@ -257,6 +286,7 @@ class NoCachingService {
         }
       } catch (error) {
         console.error('Error fetching order:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });

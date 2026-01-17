@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'caching-services'
+    static_configs:
+      - targets:
+          - 'no-caching:3000'
+          - 'cache-aside:3001'
+          - 'write-through:3002'
+          - 'write-behind:3003'
+          - 'read-through:3004'
+          - 'write-around:3005'
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+

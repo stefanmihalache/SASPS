@@ -294,6 +294,48 @@ docker exec -it db mysql -u user -ppass testdb
 > SELECT COUNT(*) FROM products;
 ```
 
+## Live Dashboard
+
+Launch a lightweight dashboard that polls all services and surfaces cache hit rates, write-behind queue pressure, and health:
+
+```bash
+npm run dashboard
+# Open http://localhost:4000
+```
+
+Environment overrides (optional): `DASHBOARD_PORT`, `NO_CACHE_URL`, `CACHE_ASIDE_URL`, `WRITE_THROUGH_URL`, `WRITE_BEHIND_URL`, `READ_THROUGH_URL`, `WRITE_AROUND_URL`.
+
+## Consistency & Failure Tests
+
+Targeted checks for cache correctness and failure handling:
+
+- **Write-behind stale window**: measures how long until the database reflects a queued write.
+- **Cache invalidation sweep**: ensures each strategy returns updated data after a write.
+- **Redis failure during write**: stops Redis, performs a write (cache-aside), restarts Redis, and validates data survived.
+
+Run:
+```bash
+npm run consistency-tests
+```
+
+Flags:
+- `--skip-redis-kill` (or `SKIP_REDIS_KILL=1`): skip stopping Redis if you cannot manage Docker locally.
+- `PRODUCT_ID=<id>`: test a different product.
+
+## Prometheus + Grafana + cAdvisor (Metrics & Infra)
+
+- Each service exposes Prometheus metrics at `/metrics` (counters for reads/writes/hits/misses/errors, gauges for queued/flushed writes, histogram for request duration).
+- Stack components added to `docker-compose.yml`: `prometheus`, `grafana` (mapped to port 3006), and `cadvisor` for container CPU/memory.
+- Prometheus config lives in `prometheus.yml`.
+- Grafana comes pre-provisioned with a Prometheus datasource and a dashboard (`Caching Strategies Overview`) showing hit/miss rates, latency (p95/p99), write-behind queue, errors, and cadvisor CPU/memory.
+
+Run everything:
+```bash
+docker-compose up -d
+# Services: 3000-3005, Prometheus: 9090, Grafana: 3006
+# Login Grafana: admin / admin
+```
+
 ## Cleanup
 
 ```bash

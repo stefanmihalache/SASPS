@@ -10,9 +10,11 @@ const RedisService = require('../services/redis');
  * - Risk of data loss if cache fails before DB write completes
  */
 class WriteBehindService {
-  constructor(dbConfig, redisConfig, writeBehindInterval = 5000) {
+  constructor(dbConfig, redisConfig, metrics = null, serviceName = 'write-behind', writeBehindInterval = 5000) {
     this.db = new DatabaseService(dbConfig);
     this.cache = new RedisService(redisConfig);
+    this.metrics = metrics;
+    this.serviceName = serviceName;
     this.cacheTTL = 3600; // 1 hour
     this.writeBehindInterval = writeBehindInterval; // How often to flush writes to DB
     this.writeQueue = new Map(); // Pending writes
@@ -29,12 +31,45 @@ class WriteBehindService {
     };
   }
 
+  recordReadHit() {
+    this.stats.reads++;
+    this.stats.cacheHits++;
+    this.metrics?.reads.labels(this.serviceName).inc();
+    this.metrics?.cacheHits.labels(this.serviceName).inc();
+  }
+
+  recordReadMiss() {
+    this.stats.reads++;
+    this.stats.cacheMisses++;
+    this.metrics?.reads.labels(this.serviceName).inc();
+    this.metrics?.cacheMisses.labels(this.serviceName).inc();
+  }
+
+  recordWrite() {
+    this.stats.writes++;
+    this.metrics?.writes.labels(this.serviceName).inc();
+  }
+
+  recordDuration(ms) {
+    this.stats.requests.push(ms);
+  }
+
+  recordError() {
+    this.metrics?.errors.labels(this.serviceName).inc();
+  }
+
+  updateQueueGauges() {
+    this.metrics?.queuedWrites.labels(this.serviceName).set(this.writeQueue.size);
+    this.metrics?.flushedWrites.labels(this.serviceName).set(this.stats.flushedWrites);
+  }
+
   async init() {
     await this.db.connect();
     await this.cache.connect();
 
     // Start background flush process
     this.startFlushTimer();
+    this.updateQueueGauges();
 
     console.log(`✓ Write-Behind Service initialized (flush interval: ${this.writeBehindInterval}ms)`);
   }
@@ -72,6 +107,7 @@ class WriteBehindService {
             break;
         }
         this.stats.flushedWrites++;
+        this.updateQueueGauges();
       } catch (error) {
         console.error(`Error flushing write for ${write.id}:`, error);
         // In production, you might want to re-queue failed writes
@@ -79,12 +115,14 @@ class WriteBehindService {
     }
 
     console.log(`✓ Flush complete. ${this.stats.flushedWrites} total writes flushed.`);
+    this.updateQueueGauges();
   }
 
   queueWrite(operation, id, data = null) {
     const key = `${operation}:${id}`;
     this.writeQueue.set(key, { operation, id, data, timestamp: Date.now() });
     this.stats.queuedWrites++;
+    this.updateQueueGauges();
   }
 
   getRouter() {
@@ -128,6 +166,7 @@ class WriteBehindService {
         avgResponseTime: 0,
         requests: []
       };
+      this.updateQueueGauges();
       await this.cache.flush();
       res.json({ message: 'Stats reset and cache flushed successfully' });
     });
@@ -145,16 +184,15 @@ class WriteBehindService {
     router.get('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const cacheKey = this.getCacheKey('product', req.params.id);
 
         let product = await this.cache.get(cacheKey);
         let source = 'cache';
 
         if (product) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
 
           product = await this.db.getProductById(req.params.id);
@@ -165,7 +203,7 @@ class WriteBehindService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+      this.recordDuration(responseTime);
 
         if (product) {
           res.json({ data: product, source, responseTime });
@@ -174,6 +212,7 @@ class WriteBehindService {
         }
       } catch (error) {
         console.error('Error fetching product:', error);
+      this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -181,7 +220,6 @@ class WriteBehindService {
     router.get('/products', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const limit = parseInt(req.query.limit) || 100;
         const cacheKey = this.getCacheKey('products', `all:${limit}`);
 
@@ -189,9 +227,9 @@ class WriteBehindService {
         let source = 'cache';
 
         if (products) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
 
           products = await this.db.getAllProducts(limit);
@@ -199,11 +237,12 @@ class WriteBehindService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+      this.recordDuration(responseTime);
 
         res.json({ data: products, source, count: products.length, responseTime });
       } catch (error) {
         console.error('Error fetching products:', error);
+      this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -212,7 +251,7 @@ class WriteBehindService {
     router.put('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         // First, get current product to merge with update
         const current = await this.db.getProductById(req.params.id);
@@ -229,6 +268,7 @@ class WriteBehindService {
 
         // Queue the database write for later
         this.queueWrite('update', req.params.id, req.body);
+        this.updateQueueGauges();
 
         // Invalidate list caches
         const listKeys = await this.cache.keys(this.getCacheKey('products', '*'));
@@ -237,7 +277,7 @@ class WriteBehindService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         res.json({
           message: 'Product updated successfully (queued for DB write)',
@@ -246,6 +286,7 @@ class WriteBehindService {
         });
       } catch (error) {
         console.error('Error updating product:', error);
+      this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -254,7 +295,7 @@ class WriteBehindService {
     router.post('/products', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         // Write to cache immediately
         const cacheKey = this.getCacheKey('product', req.body.productCode);
@@ -262,6 +303,7 @@ class WriteBehindService {
 
         // Queue the database write
         this.queueWrite('create', req.body.productCode, req.body);
+        this.updateQueueGauges();
 
         // Invalidate list caches
         const listKeys = await this.cache.keys(this.getCacheKey('products', '*'));
@@ -270,7 +312,7 @@ class WriteBehindService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         res.status(201).json({
           message: 'Product created successfully (queued for DB write)',
@@ -279,6 +321,7 @@ class WriteBehindService {
         });
       } catch (error) {
         console.error('Error creating product:', error);
+      this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -287,7 +330,7 @@ class WriteBehindService {
     router.delete('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         // Remove from cache immediately
         const cacheKey = this.getCacheKey('product', req.params.id);
@@ -295,6 +338,7 @@ class WriteBehindService {
 
         // Queue the database delete
         this.queueWrite('delete', req.params.id);
+        this.updateQueueGauges();
 
         // Invalidate list caches
         const listKeys = await this.cache.keys(this.getCacheKey('products', '*'));
@@ -303,7 +347,7 @@ class WriteBehindService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         res.json({
           message: 'Product deleted successfully (queued for DB write)',
@@ -312,6 +356,7 @@ class WriteBehindService {
         });
       } catch (error) {
         console.error('Error deleting product:', error);
+      this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -320,16 +365,15 @@ class WriteBehindService {
     router.get('/customers/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const cacheKey = this.getCacheKey('customer', req.params.id);
 
         let customer = await this.cache.get(cacheKey);
         let source = 'cache';
 
         if (customer) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
           customer = await this.db.getCustomerById(req.params.id);
 
@@ -339,7 +383,7 @@ class WriteBehindService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+      this.recordDuration(responseTime);
 
         if (customer) {
           res.json({ data: customer, source, responseTime });
@@ -348,6 +392,7 @@ class WriteBehindService {
         }
       } catch (error) {
         console.error('Error fetching customer:', error);
+      this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -355,7 +400,6 @@ class WriteBehindService {
     router.get('/customers', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const limit = parseInt(req.query.limit) || 100;
         const cacheKey = this.getCacheKey('customers', `all:${limit}`);
 
@@ -363,20 +407,21 @@ class WriteBehindService {
         let source = 'cache';
 
         if (customers) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
           customers = await this.db.getAllCustomers(limit);
           await this.cache.set(cacheKey, customers, this.cacheTTL);
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+      this.recordDuration(responseTime);
 
         res.json({ data: customers, source, count: customers.length, responseTime });
       } catch (error) {
         console.error('Error fetching customers:', error);
+      this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -385,16 +430,15 @@ class WriteBehindService {
     router.get('/orders/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const cacheKey = this.getCacheKey('order', req.params.id);
 
         let order = await this.cache.get(cacheKey);
         let source = 'cache';
 
         if (order) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
           order = await this.db.getOrderById(req.params.id);
 
@@ -404,7 +448,7 @@ class WriteBehindService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+      this.recordDuration(responseTime);
 
         if (order) {
           res.json({ data: order, source, responseTime });
@@ -413,6 +457,7 @@ class WriteBehindService {
         }
       } catch (error) {
         console.error('Error fetching order:', error);
+      this.recordError();
         res.status(500).json({ error: error.message });
       }
     });

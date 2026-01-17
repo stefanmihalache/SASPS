@@ -11,7 +11,9 @@
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
-    "load-test": "node src/loadTest.js"
+    "load-test": "node src/loadTest.js",
+    "dashboard": "node src/dashboard/server.js",
+    "consistency-tests": "node src/consistencyTests.js"
   },
   "keywords": [
     "caching",
@@ -27,6 +29,7 @@
     "axios": "^1.13.2",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "prom-client": "^15.1.0",
     "mysql2": "^3.6.5",
     "redis": "^4.6.11"
   },

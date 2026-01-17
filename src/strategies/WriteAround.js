@@ -8,9 +8,11 @@ const RedisService = require('../services/redis');
  * - Write: write directly to DB (bypass cache), then invalidate relevant cache keys
  */
 class WriteAroundService {
-    constructor(dbConfig, redisConfig) {
+    constructor(dbConfig, redisConfig, metrics = null, serviceName = 'write-around') {
         this.db = new DatabaseService(dbConfig);
         this.cache = new RedisService(redisConfig);
+        this.metrics = metrics;
+        this.serviceName = serviceName;
         this.cacheTTL = 3600; // 1 hour
 
         this.stats = {
@@ -23,6 +25,33 @@ class WriteAroundService {
             avgResponseTime: 0,
             requests: []
         };
+    }
+
+    recordReadHit() {
+        this.stats.reads++;
+        this.stats.cacheHits++;
+        this.metrics?.reads.labels(this.serviceName).inc();
+        this.metrics?.cacheHits.labels(this.serviceName).inc();
+    }
+
+    recordReadMiss() {
+        this.stats.reads++;
+        this.stats.cacheMisses++;
+        this.metrics?.reads.labels(this.serviceName).inc();
+        this.metrics?.cacheMisses.labels(this.serviceName).inc();
+    }
+
+    recordWrite() {
+        this.stats.writes++;
+        this.metrics?.writes.labels(this.serviceName).inc();
+    }
+
+    recordDuration(ms) {
+        this.stats.requests.push(ms);
+    }
+
+    recordError() {
+        this.metrics?.errors.labels(this.serviceName).inc();
     }
 
     async init() {
@@ -97,16 +126,15 @@ class WriteAroundService {
         router.get('/products/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const cacheKey = this.getCacheKey('product', req.params.id);
 
                 let product = await this.cache.get(cacheKey);
                 let source = 'cache';
 
                 if (product) {
-                    this.stats.cacheHits++;
+                    this.recordReadHit();
                 } else {
-                    this.stats.cacheMisses++;
+                    this.recordReadMiss();
                     source = 'database';
 
                     product = await this.db.getProductById(req.params.id);
@@ -114,12 +142,13 @@ class WriteAroundService {
                 }
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 if (product) return res.json({ data: product, source, responseTime });
                 return res.status(404).json({ error: 'Product not found' });
             } catch (error) {
                 console.error('Error fetching product:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -127,7 +156,6 @@ class WriteAroundService {
         router.get('/products', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const limit = parseInt(req.query.limit) || 100;
                 const cacheKey = this.getCacheKey('products', `all:${limit}`);
 
@@ -135,9 +163,9 @@ class WriteAroundService {
                 let source = 'cache';
 
                 if (products) {
-                    this.stats.cacheHits++;
+                    this.recordReadHit();
                 } else {
-                    this.stats.cacheMisses++;
+                    this.recordReadMiss();
                     source = 'database';
 
                     products = await this.db.getAllProducts(limit);
@@ -145,11 +173,12 @@ class WriteAroundService {
                 }
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.json({ data: products || [], source, count: (products || []).length, responseTime });
             } catch (error) {
                 console.error('Error fetching products:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -160,7 +189,7 @@ class WriteAroundService {
         router.put('/products/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.writes++;
+                this.recordWrite();
 
                 const current = await this.db.getProductById(req.params.id);
                 if (!current) return res.status(404).json({ error: 'Product not found' });
@@ -172,11 +201,12 @@ class WriteAroundService {
                 await this.invalidateProductCaches(req.params.id);
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.json({ message: 'Product updated successfully (cache bypassed)', responseTime });
             } catch (error) {
                 console.error('Error updating product:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -184,7 +214,7 @@ class WriteAroundService {
         router.post('/products', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.writes++;
+                this.recordWrite();
 
                 // Write to DB only
                 await this.db.createProduct(req.body);
@@ -194,11 +224,12 @@ class WriteAroundService {
                 for (const key of listKeys) await this.cache.del(key);
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.status(201).json({ message: 'Product created successfully (cache bypassed)', responseTime });
             } catch (error) {
                 console.error('Error creating product:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -206,7 +237,7 @@ class WriteAroundService {
         router.delete('/products/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.writes++;
+                this.recordWrite();
 
                 // Write to DB only
                 await this.db.deleteProduct(req.params.id);
@@ -215,11 +246,12 @@ class WriteAroundService {
                 await this.invalidateProductCaches(req.params.id);
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.json({ message: 'Product deleted successfully (cache bypassed)', responseTime });
             } catch (error) {
                 console.error('Error deleting product:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -230,16 +262,15 @@ class WriteAroundService {
         router.get('/customers/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const cacheKey = this.getCacheKey('customer', req.params.id);
 
                 let customer = await this.cache.get(cacheKey);
                 let source = 'cache';
 
                 if (customer) {
-                    this.stats.cacheHits++;
+                    this.recordReadHit();
                 } else {
-                    this.stats.cacheMisses++;
+                    this.recordReadMiss();
                     source = 'database';
 
                     customer = await this.db.getCustomerById(req.params.id);
@@ -247,12 +278,13 @@ class WriteAroundService {
                 }
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 if (customer) return res.json({ data: customer, source, responseTime });
                 return res.status(404).json({ error: 'Customer not found' });
             } catch (error) {
                 console.error('Error fetching customer:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -260,7 +292,6 @@ class WriteAroundService {
         router.get('/customers', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const limit = parseInt(req.query.limit) || 100;
                 const cacheKey = this.getCacheKey('customers', `all:${limit}`);
 
@@ -268,9 +299,9 @@ class WriteAroundService {
                 let source = 'cache';
 
                 if (customers) {
-                    this.stats.cacheHits++;
+                    this.recordReadHit();
                 } else {
-                    this.stats.cacheMisses++;
+                    this.recordReadMiss();
                     source = 'database';
 
                     customers = await this.db.getAllCustomers(limit);
@@ -278,11 +309,12 @@ class WriteAroundService {
                 }
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 res.json({ data: customers || [], source, count: (customers || []).length, responseTime });
             } catch (error) {
                 console.error('Error fetching customers:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });
@@ -293,16 +325,15 @@ class WriteAroundService {
         router.get('/orders/:id', async (req, res) => {
             const startTime = Date.now();
             try {
-                this.stats.reads++;
                 const cacheKey = this.getCacheKey('order', req.params.id);
 
                 let order = await this.cache.get(cacheKey);
                 let source = 'cache';
 
                 if (order) {
-                    this.stats.cacheHits++;
+                    this.recordReadHit();
                 } else {
-                    this.stats.cacheMisses++;
+                    this.recordReadMiss();
                     source = 'database';
 
                     order = await this.db.getOrderById(req.params.id);
@@ -310,12 +341,13 @@ class WriteAroundService {
                 }
 
                 const responseTime = Date.now() - startTime;
-                this.stats.requests.push(responseTime);
+                this.recordDuration(responseTime);
 
                 if (order) return res.json({ data: order, source, responseTime });
                 return res.status(404).json({ error: 'Order not found' });
             } catch (error) {
                 console.error('Error fetching order:', error);
+                this.recordError();
                 res.status(500).json({ error: error.message });
             }
         });

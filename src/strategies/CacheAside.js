@@ -9,9 +9,11 @@ const RedisService = require('../services/redis');
  * - Application manages cache explicitly
  */
 class CacheAsideService {
-  constructor(dbConfig, redisConfig) {
+  constructor(dbConfig, redisConfig, metrics = null, serviceName = 'cache-aside') {
     this.db = new DatabaseService(dbConfig);
     this.cache = new RedisService(redisConfig);
+    this.metrics = metrics;
+    this.serviceName = serviceName;
     this.cacheTTL = 3600; // 1 hour
     this.stats = {
       reads: 0,
@@ -21,6 +23,33 @@ class CacheAsideService {
       avgResponseTime: 0,
       requests: []
     };
+  }
+
+  recordReadHit() {
+    this.stats.reads++;
+    this.stats.cacheHits++;
+    this.metrics?.reads.labels(this.serviceName).inc();
+    this.metrics?.cacheHits.labels(this.serviceName).inc();
+  }
+
+  recordReadMiss() {
+    this.stats.reads++;
+    this.stats.cacheMisses++;
+    this.metrics?.reads.labels(this.serviceName).inc();
+    this.metrics?.cacheMisses.labels(this.serviceName).inc();
+  }
+
+  recordWrite() {
+    this.stats.writes++;
+    this.metrics?.writes.labels(this.serviceName).inc();
+  }
+
+  recordDuration(ms) {
+    this.stats.requests.push(ms);
+  }
+
+  recordError() {
+    this.metrics?.errors.labels(this.serviceName).inc();
   }
 
   async init() {
@@ -76,7 +105,6 @@ class CacheAsideService {
     router.get('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const cacheKey = this.getCacheKey('product', req.params.id);
 
         // Try cache first
@@ -84,10 +112,10 @@ class CacheAsideService {
         let source = 'cache';
 
         if (product) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
           // Cache miss - load from database
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
 
           product = await this.db.getProductById(req.params.id);
@@ -99,7 +127,7 @@ class CacheAsideService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (product) {
           res.json({
@@ -112,6 +140,7 @@ class CacheAsideService {
         }
       } catch (error) {
         console.error('Error fetching product:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -120,7 +149,6 @@ class CacheAsideService {
     router.get('/products', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const limit = parseInt(req.query.limit) || 100;
         const cacheKey = this.getCacheKey('products', `all:${limit}`);
 
@@ -128,9 +156,9 @@ class CacheAsideService {
         let source = 'cache';
 
         if (products) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
 
           products = await this.db.getAllProducts(limit);
@@ -138,7 +166,7 @@ class CacheAsideService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         res.json({
           data: products,
@@ -148,6 +176,7 @@ class CacheAsideService {
         });
       } catch (error) {
         console.error('Error fetching products:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -156,7 +185,7 @@ class CacheAsideService {
     router.put('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         // Write to database first
         const success = await this.db.updateProduct(req.params.id, req.body);
@@ -174,7 +203,7 @@ class CacheAsideService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (success) {
           res.json({
@@ -186,6 +215,7 @@ class CacheAsideService {
         }
       } catch (error) {
         console.error('Error updating product:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -194,7 +224,7 @@ class CacheAsideService {
     router.post('/products', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         const success = await this.db.createProduct(req.body);
 
@@ -207,7 +237,7 @@ class CacheAsideService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (success) {
           res.status(201).json({
@@ -219,6 +249,7 @@ class CacheAsideService {
         }
       } catch (error) {
         console.error('Error creating product:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -227,7 +258,7 @@ class CacheAsideService {
     router.delete('/products/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.writes++;
+        this.recordWrite();
 
         const success = await this.db.deleteProduct(req.params.id);
 
@@ -242,7 +273,7 @@ class CacheAsideService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (success) {
           res.json({
@@ -254,6 +285,7 @@ class CacheAsideService {
         }
       } catch (error) {
         console.error('Error deleting product:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -262,16 +294,15 @@ class CacheAsideService {
     router.get('/customers/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const cacheKey = this.getCacheKey('customer', req.params.id);
 
         let customer = await this.cache.get(cacheKey);
         let source = 'cache';
 
         if (customer) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
           customer = await this.db.getCustomerById(req.params.id);
 
@@ -281,7 +312,7 @@ class CacheAsideService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (customer) {
           res.json({ data: customer, source, responseTime });
@@ -290,6 +321,7 @@ class CacheAsideService {
         }
       } catch (error) {
         console.error('Error fetching customer:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -297,7 +329,6 @@ class CacheAsideService {
     router.get('/customers', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const limit = parseInt(req.query.limit) || 100;
         const cacheKey = this.getCacheKey('customers', `all:${limit}`);
 
@@ -305,20 +336,21 @@ class CacheAsideService {
         let source = 'cache';
 
         if (customers) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
           customers = await this.db.getAllCustomers(limit);
           await this.cache.set(cacheKey, customers, this.cacheTTL);
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         res.json({ data: customers, source, count: customers.length, responseTime });
       } catch (error) {
         console.error('Error fetching customers:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });
@@ -327,16 +359,15 @@ class CacheAsideService {
     router.get('/orders/:id', async (req, res) => {
       const startTime = Date.now();
       try {
-        this.stats.reads++;
         const cacheKey = this.getCacheKey('order', req.params.id);
 
         let order = await this.cache.get(cacheKey);
         let source = 'cache';
 
         if (order) {
-          this.stats.cacheHits++;
+          this.recordReadHit();
         } else {
-          this.stats.cacheMisses++;
+          this.recordReadMiss();
           source = 'database';
           order = await this.db.getOrderById(req.params.id);
 
@@ -346,7 +377,7 @@ class CacheAsideService {
         }
 
         const responseTime = Date.now() - startTime;
-        this.stats.requests.push(responseTime);
+        this.recordDuration(responseTime);
 
         if (order) {
           res.json({ data: order, source, responseTime });
@@ -355,6 +386,7 @@ class CacheAsideService {
         }
       } catch (error) {
         console.error('Error fetching order:', error);
+        this.recordError();
         res.status(500).json({ error: error.message });
       }
     });

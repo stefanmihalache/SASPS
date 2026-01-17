@@ -7,9 +7,11 @@ const WriteThroughService = require('./strategies/WriteThrough');
 const WriteBehindService = require('./strategies/WriteBehind');
 const ReadThroughService = require('./strategies/ReadThrough');
 const WriteAroundService = require('./strategies/WriteAround');
+const { createMetrics } = require('./metrics');
 
 const SERVICE_NAME = process.env.SERVICE_NAME || 'no-caching';
 const PORT = process.env.PORT || 3000;
+const metrics = createMetrics(SERVICE_NAME);
 
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
@@ -30,6 +32,19 @@ async function startService() {
   const app = express();
   app.use(express.json());
 
+  // Request duration metrics middleware
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const duration = Date.now() - start;
+      const routeLabel = req.route?.path || req.path || 'unknown';
+      metrics.requestDurationMs
+        .labels(SERVICE_NAME, req.method, routeLabel, String(res.statusCode))
+        .observe(duration);
+    });
+    next();
+  });
+
   let service;
 
   console.log(`\n🚀 Starting ${SERVICE_NAME} service...\n`);
@@ -38,27 +53,27 @@ async function startService() {
     // Initialize the appropriate caching strategy
     switch (SERVICE_NAME) {
       case 'no-caching':
-        service = new NoCachingService(dbConfig);
+        service = new NoCachingService(dbConfig, metrics, SERVICE_NAME);
         break;
 
       case 'cache-aside':
-        service = new CacheAsideService(dbConfig, redisConfig);
+        service = new CacheAsideService(dbConfig, redisConfig, metrics, SERVICE_NAME);
         break;
 
       case 'write-through':
-        service = new WriteThroughService(dbConfig, redisConfig);
+        service = new WriteThroughService(dbConfig, redisConfig, metrics, SERVICE_NAME);
         break;
 
       case 'write-behind':
-        service = new WriteBehindService(dbConfig, redisConfig, writeBehindInterval);
+        service = new WriteBehindService(dbConfig, redisConfig, metrics, SERVICE_NAME, writeBehindInterval);
         break;
 
       case 'read-through':
-        service = new ReadThroughService(dbConfig, redisConfig);
+        service = new ReadThroughService(dbConfig, redisConfig, metrics, SERVICE_NAME);
         break;
 
       case 'write-around':
-        service = new WriteAroundService(dbConfig, redisConfig);
+        service = new WriteAroundService(dbConfig, redisConfig, metrics, SERVICE_NAME);
         break;
 
       default:
@@ -86,6 +101,17 @@ async function startService() {
           orderById: '/api/orders/:id'
         }
       });
+    });
+
+    // Prometheus metrics endpoint
+    app.get('/metrics', async (_req, res) => {
+      try {
+        res.set('Content-Type', metrics.register.contentType);
+        res.end(await metrics.register.metrics());
+      } catch (error) {
+        console.error('Metrics endpoint failed:', error);
+        res.status(500).end();
+      }
     });
 
     // Error handling middleware

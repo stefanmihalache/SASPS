@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Caching Strategies Dashboard</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="header">
+    <div>
+      <h1>Caching Strategies Dashboard</h1>
+      <p>Live view of service health, cache hit rates, and write queues.</p>
+    </div>
+    <div class="pill" id="updated-at">--</div>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="card-header">
+        <h2>Service Status</h2>
+        <button id="refresh-btn" class="btn">Refresh now</button>
+      </div>
+      <div class="table-wrapper">
+        <table id="services-table">
+          <thead>
+            <tr>
+              <th>Service</th>
+              <th>Status</th>
+              <th>Cache Hit Rate</th>
+              <th>Reads</th>
+              <th>Writes</th>
+              <th>Queued Writes</th>
+              <th>Flushed Writes</th>
+              <th>Avg Response (ms)</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div class="card-header">
+          <h2>Alerts</h2>
+        </div>
+        <ul id="alerts" class="list"></ul>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <h2>Legend</h2>
+        </div>
+        <ul class="list">
+          <li><span class="badge ok"></span> Healthy</li>
+          <li><span class="badge warn"></span> Degraded (Redis down or queue growing)</li>
+          <li><span class="badge danger"></span> Unhealthy / not responding</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+

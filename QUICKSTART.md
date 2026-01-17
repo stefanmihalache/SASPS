@@ -182,3 +182,22 @@ curl http://localhost:3003/api/stats | grep queueSize
 curl -X POST http://localhost:3003/api/flush
 ```
 
+## Dashboard (New)
+```bash
+npm run dashboard
+# Open http://localhost:4000
+```
+
+## Consistency & Failure Tests (New)
+```bash
+npm run consistency-tests
+# Add --skip-redis-kill to avoid stopping Redis if Docker access is restricted
+```
+
+## Prometheus + Grafana (New)
+```bash
+docker-compose up -d
+# Prometheus: http://localhost:9090
+# Grafana:    http://localhost:3006 (admin / admin)
+```
+
